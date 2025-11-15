@@ -1,0 +1,18 @@
+
+-INTRUCCIONES
+
+- Para inicializar el venv:
+
+    python -m venv quantum_env
+
+    - Windows:
+        .\quantum_env\Scripts\Activate.ps1.\quantum_env\Scripts\Activate.ps1
+
+    - Linux:
+        source quantum_env/bin/activate
+
+    pip install -r requirements.txt
+
+
+- Para ejecutar experiment.py:
+    python experiment.py --mode <episodes|time> --budget <cantidad de tiempo en segundos o cantidad de shots> --repeats <# de repeticiones> --out <ruta donde guardar datos>

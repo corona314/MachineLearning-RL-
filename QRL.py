@@ -64,6 +64,71 @@ class QuantumPongAgent:
         loss.backward()
         self.optimizers[action_index].step()
 
+    def get_q_table(self, game):
+        """
+        Construye una 'Q-table' aproximada evaluando cada QNN por acción
+        sobre todos los estados discretos definidos en game.positions_space.
+        Devuelve un ndarray de forma (filas, filas, columnas, num_actions).
+        """
+        pos_shape = game.positions_space.shape  # (filas, filas, columnas)
+        q_table = np.zeros((pos_shape[0], pos_shape[1], pos_shape[2], self.num_actions), dtype=float)
+
+        # Para reconstruir valores de estado en píxeles: en tu env usas floor(val/dy)-2,
+        # por tanto invertimos: val ≈ (idx + 2) * abs(dy)
+        step_x = abs(game.dx)
+        step_y = abs(game.dy)
+
+        for i in range(pos_shape[0]):        # player index
+            for j in range(pos_shape[1]):    # ball y index
+                for k in range(pos_shape[2]):# ball x index
+                    # reconstruimos estado aproximado en píxeles
+                    player_px = (i + 2) * step_y
+                    ball_y_px  = (j + 2) * step_y
+                    ball_x_px  = (k + 2) * step_x
+                    state = (player_px, ball_y_px, ball_x_px)
+
+                    # convertir y evaluar cada modelo
+                    state_tensor = self.state_to_tensor(state)
+                    # TorchConnector puede devolver tensores 0-d o de tamaño 1; convertimos a float
+                    q_vals = []
+                    for model in self.models:
+                        out = model(state_tensor)
+                        # out puede ser tensor shape [1] o [1,1]; extraemos escalar float
+                        q_val = out.detach().cpu().numpy()
+                        q_val = float(np.asarray(q_val).reshape(-1)[0])
+                        q_vals.append(q_val)
+
+                    q_table[i, j, k, :] = np.array(q_vals, dtype=float)
+
+        return q_table
+
+    def print_q_table(self, game, digits=2, show_best_action=True):
+        """
+        Imprime la Q-table redondeada para cada estado discreto.
+        Si show_best_action=True, imprime también la acción elegida por la QNN.
+        """
+        q_table = self.get_q_table(game)
+        filas, filas2, columnas, _ = q_table.shape
+        # comprobación rápida
+        assert filas == filas2, "Esperaba posiciones cuadradas (filas, filas, columnas)."
+
+        np.set_printoptions(precision=digits, suppress=True)
+
+        for i in range(filas):
+            print(f"Player idx = {i}")
+            for j in range(filas):
+                row_str = ""
+                for k in range(columnas):
+                    q_vals = q_table[i, j, k]
+                    best_idx = int(np.argmax(q_vals))
+                    q_str = "[" + ", ".join(f"{v:.{digits}f}" for v in q_vals) + "]"
+                    if show_best_action:
+                        row_str += f"{q_str}->{self.action_space[best_idx]}  "
+                    else:
+                        row_str += f"{q_str}  "
+                print(row_str)
+            print("-" * 80)
+
 
 class PongEnvironment:
     
@@ -200,6 +265,7 @@ class PongEnvironment:
         plt.pause(0.001)  # pausa corta para que se refresque la ventana
         sleep(0.02)
         return fig, ax
+ 
 
 
 def play_quantum(rounds=50, max_life=3, discount_factor = 0.1, learning_rate = 0.01,
@@ -258,3 +324,7 @@ done = False
 while not done:
     action = learner.get_next_step(state)
     state, reward, done = demo_game.step(action, animate=True)
+
+q_table = learner.get_q_table(game)
+print("Q-table shape:", q_table.shape)
+learner.print_q_table(game, digits=2)   # imprime la tabla y la mejor acción por estado

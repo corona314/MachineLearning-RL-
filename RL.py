@@ -253,3 +253,5 @@ learner2 = PongAgent(game, policy=learner.get_policy())
 learner2.ratio_explotacion = 1.0
 demo_game = PongEnvironment(max_life=3, movimiento_px=3)
 player = play(rounds=1, learner=learner2, game=demo_game, animate=True)
+
+#learner2.print_policy()

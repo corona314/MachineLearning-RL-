@@ -1,6 +1,7 @@
 # Librerías científicas
 numpy==1.26.0
 matplotlib==3.8.0
+pandas==2.2.2
 
 # IPython display
 ipython==8.17.0
