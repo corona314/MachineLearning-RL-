@@ -1,0 +1,2 @@
+seed,episodes_done,total_time_s,avg_reward_per_ep,std_reward_per_ep,avg_time_per_ep,total_forward_calls,total_backward_calls
+0,50,427.0813989639282,-7.6,21.12439348241743,8.541627979278564,44202,7367

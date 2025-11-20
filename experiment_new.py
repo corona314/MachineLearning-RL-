@@ -11,7 +11,7 @@ Requisitos:
 
 import time
 import argparse
-import csv
+import warnings
 import os
 import statistics
 import numpy as np
@@ -32,10 +32,6 @@ try:
     TORCH_AVAILABLE = True
 except Exception:
     TORCH_AVAILABLE = False
-
-QISKIT_AVAILABLE = False
-_qiskit_import_error = None
-
 try:
     # circuit libs
     from qiskit.circuit.library import ZZFeatureMap, RealAmplitudes
@@ -54,13 +50,14 @@ try:
     # qiskit-ml
     from qiskit_machine_learning.neural_networks import EstimatorQNN
     from qiskit_machine_learning.connectors import TorchConnector
+    from qiskit import transpile
 
     QISKIT_AVAILABLE = True
 except Exception as e:
     QISKIT_AVAILABLE = False
     _qiskit_import_error = e
 
-# Mensaje de diagnóstico (opcional)
+# Mensaje de diagnóstico
 if not QISKIT_AVAILABLE:
     print("WARNING: Qiskit no cargado correctamente. Error:", _qiskit_import_error)
 else:
@@ -257,65 +254,192 @@ class PongAgent:
 # Agente cuántico
 # ---------------------------
 class QuantumPongAgent:
-    def __init__(self, game, discount_factor=0.1, learning_rate=0.01,
-                 ratio_explotacion=0.9, num_qubits=3, reps=1, device='cpu'):
+    def __init__(self, game, discount_factor=0.1, learning_rate=1e-3,
+                 ratio_explotacion=0.9, num_qubits=3, reps=0, device='cpu'):
         if not QISKIT_AVAILABLE:
             raise RuntimeError("Qiskit/Torch no están disponibles en este entorno.")
         self.discount_factor = discount_factor
         self.learning_rate = learning_rate
         self.ratio_explotacion = ratio_explotacion
         self.action_space = game.action_space
-        self.num_actions = len(game.action_space)
+        self.num_actions = len(game.action_space)  # normalmente 2 en tu caso
         self.num_qubits = num_qubits
         self.device = torch.device(device)
 
-        # instrumentación
+        # métricas
         self.forward_calls = 0
         self.backward_calls = 0
 
-        # construir circuito simple (ajusta num_qubits/reps para tiempo)
-        feature_map = ZZFeatureMap(self.num_qubits)
-        ansatz = RealAmplitudes(self.num_qubits, reps=reps)
-        qc = feature_map.compose(ansatz)
+        # Construcción del circuito (feature map + ansatz)
+        self.feature_map = ZZFeatureMap(self.num_qubits)
+        self.ansatz = RealAmplitudes(self.num_qubits, reps=reps)
+        self.qc = self.feature_map.compose(self.ansatz)
 
-        # QNN por acción (simple y directo)
-        self.qnns = [EstimatorQNN(circuit=qc,
-                                  input_params=feature_map.parameters,
-                                  weight_params=ansatz.parameters)
-                     for _ in range(self.num_actions)]
+        # Intentamos crear un EstimatorQNN que devuelva múltiples observables (una salida por acción)
+        # Observables: mediremos Z en qubit 0 y Z en qubit 1 (si hay menos qubits, se repiten).
+        # Esto produce un vector de expectativas de tamaño num_actions.
+        try:
+            # crear lista de Pauli Z observables (SparsePauliOp)
+            obs = []
+            for i in range(self.num_actions):
+                # seleccionar qubit i % num_qubits para la i-ésima acción
+                qubit_idx = i % self.num_qubits
+                pauli_str = ['I'] * self.num_qubits
+                pauli_str[qubit_idx] = 'Z'
+                pauli_label = ''.join(reversed(pauli_str))  # qiskit order
+                obs.append(SparsePauliOp(Pauli(pauli_label)))
 
-        # Conectar a Torch y mover a device; poner en eval() por defecto
-        self.models = []
-        for qnn in self.qnns:
-            model = TorchConnector(qnn)
-            model.to(self.device)
-            model.eval()
-            self.models.append(model)
+            # Crear Estimator primitive con AerSimulator(method='statevector')
+            try:
+                backend = AerSimulator(method='statevector')
+                backend.set_options(max_parallel_threads=int(os.environ.get("OMP_NUM_THREADS","4")))
+                primitive_estimator = PrimitiveEstimator(options={'backend': backend})
+            except Exception:
+                # Fallback a EstimatorQNN sin primitive explícito (algunas versiones lo manejan internamente).
+                primitive_estimator = None
 
-        # optimizadores (uno por modelo)
-        self.optimizers = [optim.Adam(model.parameters(), lr=learning_rate) for model in self.models]
+            # Construir EstimatorQNN multi-output (si tu versión lo soporta)
+            if primitive_estimator is not None:
+                # El constructor puede aceptar 'estimator' en lugar de backend/quantum_instance
+                self.qnn = EstimatorQNN(circuit=self.qc,
+                                        observables=obs,
+                                        input_params=self.feature_map.parameters,
+                                        weight_params=self.ansatz.parameters,
+                                        estimator=primitive_estimator)
+            else:
+                # Intentar sin primitive; si falla, saltará al except de más abajo
+                self.qnn = EstimatorQNN(circuit=self.qc,
+                                        observables=obs,
+                                        input_params=self.feature_map.parameters,
+                                        weight_params=self.ansatz.parameters)
+            # Conectar a Torch: UN SOLO modelo multi-salida
+            self.model = TorchConnector(self.qnn).to(self.device)
+            self.model.eval()
+            self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+            self.loss_fn = nn.MSELoss()
+            self.mode = "estimator_multi"
+            # Transpila una vez si el backend requiere (fallback)
+            try:
+                if primitive_estimator is not None:
+                    # transpile qc for the backend if needed (no params assigned yet)
+                    transpile(self.qc, backend)
+            except Exception:
+                pass
+
+        except Exception as e:
+            # Si la ruta anterior falla (versiones qiskit incompatibles), activamos un fallback robusto.
+            warnings.warn("Fallo creando EstimatorQNN multi-output: usar fallback statevector_manual. Error: " + str(e))
+            self.mode = "statevector_manual"
+            self._setup_statevector_manual()
+
+    # Fallback: pretranspila el circuito y usaremos AerSimulator(method='statevector') y cálculo manual de expectativas
+    def _setup_statevector_manual(self):
+        self.backend = AerSimulator(method='statevector')
+        self.backend.set_options(max_parallel_threads=int(os.environ.get("OMP_NUM_THREADS","4")))
+        # transpilar una vez para acelerar assign_parameters
+        try:
+            self.transpiled = transpile(self.qc, self.backend)
+        except Exception:
+            self.transpiled = self.qc
+
+        # vectors de parámetros para bind
+        self.input_params = list(self.feature_map.parameters)
+        self.weight_params = list(self.ansatz.parameters)
+        # optimizer: hay parámetros expuestos por TorchConnector en la ruta Estimator; aquí crearemos pesos manuales
+        # para mantener compatibilidad exponeremos un pequeño torch.nn.Module que contiene los parámetros del ansatz.
+        class SimpleAnsatzModule(nn.Module):
+            def __init__(self, n_weights):
+                super().__init__()
+                # inicializar los pesos pequeños
+                self.weights = nn.Parameter(0.01 * torch.randn(n_weights))
+
+            def forward(self):
+                return self.weights
+
+        # número de parámetros del ansatz estimado por la forma del ansatz (aprox)
+        # Para mayor robustez, creamos parámetros reales iguales en longitud al número de parámetros simbólicos
+        n_weights = len(self.weight_params)
+        self.ansatz_module = SimpleAnsatzModule(n_weights).to(self.device)
+        self.optimizer = optim.Adam(self.ansatz_module.parameters(), lr=self.learning_rate)
         self.loss_fn = nn.MSELoss()
 
+        # Precalcular las observables Z para cada acción (como matrices) para expectativas rápidas
+        from qiskit.quantum_info import SparsePauliOp
+        self.obs_ops = []
+        for i in range(self.num_actions):
+            qubit_idx = i % self.num_qubits
+            pauli_str = ['I'] * self.num_qubits
+            pauli_str[qubit_idx] = 'Z'
+            pauli_label = ''.join(reversed(pauli_str))
+            self.obs_ops.append(SparsePauliOp(Pauli(pauli_label)))
+
     def state_to_tensor(self, state):
-        # escalado sencillo; ajústalo si tu feature map espera otro rango
-        t = torch.tensor([s / 50 for s in state], dtype=torch.float32, device=self.device)
-        return t
+        return torch.tensor([s / 50 for s in state], dtype=torch.float32, device=self.device)
+
+    # Utilidad: dada una statevector y un observable (SparsePauliOp) calcula la expectativa
+    @staticmethod
+    def _expectation_from_statevector(statevector, observable: SparsePauliOp):
+        # statevector: numpy array de shape (2^n,)
+        # observable: SparsePauliOp -> convertimos a matriz densa si small n
+        # Para n pequeño esto es rápido
+        mat = observable.to_matrix()  # (2^n,2^n)
+        # <psi|O|psi>
+        psi = statevector
+        exp = np.vdot(psi, mat.dot(psi))
+        return np.real_if_close(exp).item()
+
+    def _run_statevector_and_get_outputs(self, param_values, input_values):
+        """
+        param_values: numpy array de weights for ansatz
+        input_values: numpy array of feature inputs (length num_qubits)
+        devuelve: lista de expectativas (len num_actions)
+        """
+        # bind parameters: crear mapping para parameters -> values
+        # feature_map parameters first, then weight params (según cómo compuse el circuito)
+        bind_dict = {}
+        # feature map values: asumimos input_values length = num_qubits
+        for i, p in enumerate(self.input_params):
+            bind_dict[p] = float(input_values[i % len(input_values)])
+        # ansatz weights:
+        for i, p in enumerate(self.weight_params):
+            bind_dict[p] = float(param_values[i])
+
+        bound = self.transpiled.assign_parameters(bind_dict)
+        qobj = self.backend.run(bound)
+        res = qobj.result()
+        sv = res.get_statevector(bound)
+        outputs = []
+        for obs in self.obs_ops:
+            outputs.append(float(self._expectation_from_statevector(np.array(sv), obs)))
+        return outputs
+
+    # Forward para ambos modos: devuelve lista de floats tamaño num_actions
+    def _forward_outputs(self, state_tensor):
+        # state_tensor: torch tensor en device
+        self.forward_calls += 1
+        if self.mode == "estimator_multi":
+            # TorchConnector model espera tensores; ponemos en no_grad en llamada externa
+            with torch.no_grad():
+                out = self.model(state_tensor)
+                # out puede ser tensor shape (num_actions,)
+                try:
+                    vals = out.detach().cpu().numpy().reshape(-1).tolist()
+                except Exception:
+                    vals = [float(out.item())] if out.numel()==1 else out.cpu().numpy().reshape(-1).tolist()
+            return vals
+        else:
+            # statevector manual: extraer current ansatz weights y llamar al simulador
+            # obtener numpy weights
+            param_values = self.ansatz_module.weights.detach().cpu().numpy()
+            input_values = state_tensor.detach().cpu().numpy().astype(float)
+            outputs = self._run_statevector_and_get_outputs(param_values, input_values)
+            return outputs
 
     def get_next_step(self, state):
         state_tensor = self.state_to_tensor(state)
-        q_vals = []
-
-        # inferencia sin gradiente: una llamada por modelo
+        # inferencia sin gradiente
         with torch.no_grad():
-            for model in self.models:
-                self.forward_calls += 1
-                out = model(state_tensor)  # tensor
-                try:
-                    val = out.item()       # escalar
-                except Exception:
-                    val = float(out.cpu().numpy().reshape(-1)[0])
-                q_vals.append(val)
-
+            q_vals = self._forward_outputs(state_tensor)
         q_tensor = np.array(q_vals)
         if np.random.uniform() <= self.ratio_explotacion:
             return self.action_space[int(np.argmax(q_tensor))]
@@ -323,50 +447,62 @@ class QuantumPongAgent:
             return np.random.choice(self.action_space)
 
     def update(self, state, action_taken, reward, next_state, done):
+        # Calculamos target clásico estilo Q-learning y hacemos backward solo una vez sobre la red multi-salida
         state_tensor = self.state_to_tensor(state)
         next_state_tensor = self.state_to_tensor(next_state)
 
-        # inferencias para targets con no_grad (evitamos construir graph)
-        q_vals = []
-        q_next = []
+        # obtener predicción actual y predicción siguiente (sin grad)
         with torch.no_grad():
-            for model in self.models:
-                self.forward_calls += 1
-                out1 = model(state_tensor)
-                try:
-                    q_vals.append(out1.item())
-                except Exception:
-                    q_vals.append(float(out1.cpu().numpy().reshape(-1)[0]))
-
-                self.forward_calls += 1
-                out2 = model(next_state_tensor)
-                try:
-                    q_next.append(out2.item())
-                except Exception:
-                    q_next.append(float(out2.cpu().numpy().reshape(-1)[0]))
+            q_vals = np.array(self._forward_outputs(state_tensor))
+            q_next = np.array(self._forward_outputs(next_state_tensor))
 
         target = reward
         if not done:
-            target += self.discount_factor * max(q_next)
+            target += self.discount_factor * float(q_next.max())
 
         action_index = self.action_space.index(action_taken)
 
-        # backprop solo para la QNN de esa acción
-        self.optimizers[action_index].zero_grad()
+        # Optimización:
         self.backward_calls += 1
+        if self.mode == "estimator_multi":
+            # model es TorchConnector -> tiene parámetros autograd
+            self.optimizer.zero_grad()
+            self.model.train()
+            output = self.model(state_tensor) # tensor (num_actions,)
+            # crear target vector: igual a salida actual excepto el índice action_index actualizado al target
+            target_vec = output.detach().clone()
+            # target_vec is tensor; replace index
+            target_vec[action_index] = torch.tensor(target, dtype=target_vec.dtype, device=target_vec.device)
+            loss = self.loss_fn(output, target_vec)
+            loss.backward()
+            self.optimizer.step()
+            self.model.eval()
+        else:
+            # fallback: hacemos grad con respecto a ansatz_module.weights usando aproximación por finite-diff (muy simple)
+            # NOTA: aquí uso un gradient estimate por diferencias finitas central para mantener compatibilidad.
+            # Para n_weights pequeño (3 qubits) esto es aceptable; si n_weights crece, cambia a SPSA o adjoint method.
+            eps = 1e-3
+            w = self.ansatz_module.weights.detach().clone()
+            grad = torch.zeros_like(w)
+            base_outputs = np.array(self._run_statevector_and_get_outputs(w.cpu().numpy(), state_tensor.cpu().numpy()))
+            base_val = base_outputs[action_index]
+            for i in range(len(w)):
+                w_plus = w.clone()
+                w_minus = w.clone()
+                w_plus[i] += eps
+                w_minus[i] -= eps
+                out_p = np.array(self._run_statevector_and_get_outputs(w_plus.cpu().numpy(), state_tensor.cpu().numpy()))
+                out_m = np.array(self._run_statevector_and_get_outputs(w_minus.cpu().numpy(), state_tensor.cpu().numpy()))
+                grad_i = (out_p[action_index] - out_m[action_index]) / (2*eps)
+                grad[i] = float(grad_i)
 
-        model = self.models[action_index]
-        model.train()  # activamos modo train sólo para el forward/backward necesario
-
-        output = model(state_tensor)  # forward con grad
-        # asegurar que el tensor objetivo está en el mismo device
-        target_tensor = torch.tensor([target], dtype=torch.float32, device=self.device)
-        loss = self.loss_fn(output, target_tensor)
-        loss.backward()
-        self.optimizers[action_index].step()
-
-        model.eval()   # volvemos a eval para inferencias siguientes
-
+            # actualizar parámetros con un paso de grad ascendente/descendente (MSE style)
+            # objetivo: minimizar (pred - target)^2 -> grad_w = 2*(pred - target) * d(pred)/dw
+            pred = base_val
+            g_loss = 2.0 * (pred - target) * grad  # shape (n_weights,)
+            # aplicar paso de descenso manual similar a Adam? Aquí simple SGD:
+            with torch.no_grad():
+                self.ansatz_module.weights -= (self.learning_rate * g_loss)
 # ---------------------------
 # Runner de experimentos
 # ---------------------------

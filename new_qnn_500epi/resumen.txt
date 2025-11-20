@@ -1,0 +1,16 @@
+Running classical, seed=0
+  -> done episodes=500 time=2.7s avg_r=10.74
+Running quantum, seed=0
+  -> done episodes=500 time=4933.2s avg_r=-17.76 fwd=170148
+
+=== RESUMEN CLÁSICO ===
+Repeticiones: 1, Seeds: [0]
+Episodes per run: mean=500.0 std=0.0
+Tiempo total (s): mean=2.7 std=0.0
+Avg reward/ep: mean=10.740 std=0.000
+
+=== RESUMEN CUÁNTICO ===
+Repeticiones: 1, Seeds: [0]
+Episodes per run: mean=500.0 std=0.0
+Tiempo total (s): mean=4933.2 std=0.0
+Avg reward/ep: mean=-17.760 std=0.000

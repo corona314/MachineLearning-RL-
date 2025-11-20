@@ -1,0 +1,17 @@
+Running classical, seed=0
+  -> done episodes=50 time=0.2s avg_r=-13.00
+Running quantum, seed=0
+  -> done episodes=50 time=427.1s avg_r=-7.60 fwd=44202
+
+=== RESUMEN CLÁSICO ===
+Repeticiones: 1, Seeds: [0]
+Episodes per run: mean=50.0 std=0.0
+Tiempo total (s): mean=0.2 std=0.0
+Avg reward/ep: mean=-13.000 std=0.000
+
+=== RESUMEN CUÁNTICO ===
+Repeticiones: 1, Seeds: [0]
+Episodes per run: mean=50.0 std=0.0
+Tiempo total (s): mean=427.1 std=0.0
+Avg reward/ep: mean=-7.600 std=0.000
+Gráfica guardada en qnn_imp_vs_clas/learning_curves.png
