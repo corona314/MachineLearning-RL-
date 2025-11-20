@@ -610,7 +610,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['time','episodes'], default='time', help='Modo de igualación')
     parser.add_argument('--budget', type=float, default=600.0, help='Segundos (time) o episodios (episodes)')
-    parser.add_argument('--repeats', type=int, default=3, help='Repeticiones por agente (seeds)')
+    parser.add_argument('--repeats', type=int, default=1, help='Repeticiones por agente (seeds)')
     parser.add_argument('--out', default='results', help='Directorio de salida para CSV/plots')
     parser.add_argument('--agents', default='classical,quantum', help='Qué agentes correr: classical, quantum, o ambos separados por coma')
     parser.add_argument('--reward', type=float, default=10.0, help='Recompensa por golpe de pelota (default=10)')
