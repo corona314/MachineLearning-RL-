@@ -90,3 +90,4 @@ Tras cada ejecución se generan:
 * Carpeta de salida configurable
 * Todo aparece en la ruta que definas con --out.
 
+Los resultados ya tomados están en carpetas en el repositorio, cada uno toma resultados en un entorno en específico
