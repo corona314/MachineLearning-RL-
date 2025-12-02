@@ -1,27 +1,38 @@
+INSTRUCCIONES DE USO
 
--INTRUCCIONES
-
-- Para inicializar el venv:
-
+1. Crear el entorno virtual:
     python -m venv quantum_env
 
-    - Windows:
+2. Activar el entorno:
+
+    - Windows (PowerShell):
         .\quantum_env\Scripts\Activate.ps1
 
-    - Linux:
+    - Linux/Mac:
         source quantum_env/bin/activate
 
+3. Instalar dependencias:
     pip install -r requirements.txt
 
 
-- Para ejecutar experiment.py:
+EJECUCIÓN DEL EXPERIMENTO:
     python experiment.py --mode --budget --repeats --out --agent --reward
+
+PARÁMETROS:
+    --mode <episodes|time>
+        episodes → límite por número de episodios
+        time     → límite por tiempo en segundos
     
-    --mode <episodes|time> 
-    --budget <float: cantidad de tiempo en segundos o cantidad de shots> 
-    --repeats <int: # de repeticiones> 
-    --out <ruta donde guardar datos>
+    --budget <float>
+        cantidad de episodios o segundos
+
+    --repeats <int>
+        número de repeticiones del experimento
+
+    --out <ruta>
+        carpeta donde guardar datos y gráficos
+
     --agent <quantum|classical>
-    --reward <float: recompensa (default 10)>
 
-
+    --reward <float>
+        recompensa del entorno (default 10)
