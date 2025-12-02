@@ -61,7 +61,7 @@ pip install -r requirements.txt
 
 El script principal es experiment_new.py, que acepta parámetros vía CLI:
 ```
-python experiment.py --mode --budget --repeats --out --agent --reward
+python experiment_new.py --mode --budget --repeats --out --agent --reward
 ```
 
 ##### Parámetros disponibles
